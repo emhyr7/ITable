@@ -139,8 +139,8 @@ inline U64 Hash_FNV1a(Byte *p, Count n) {
 #define Rand()        ({U64 x; while (!_rdrand64_step(&x)); x;})
 
 #define DEFAULT_EXTENT      (1ull << 32)
-#define DEFAULT_QUANTITY    (1024ull << 2)
-#define DEFAULT_GRANULARITY (64ull)
+#define DEFAULT_QUANTITY    (1024ull << 3)
+#define DEFAULT_GRANULARITY (4096ull)
 
 /*
 a table that only increases in size. there're no capabilities to evict entries.
@@ -167,13 +167,15 @@ void Initialize(ITable *table) {
 	Assert(CheckAlignment(table->granularity),);
 }
 
+static Count Farts[DEFAULT_QUANTITY];
+
 Index *Fetch(void *key, Count keysz, ITable *table) {
 	Index *result = 0;
 
 	Count linescnt = table->quantity;
 	Count linesz = table->granularity;
 	
-	U32 hash = Hash(key, keysz) & (linescnt - 1);
+	Index hash = Hash(key, keysz) & (linescnt - 1);
 	Address addr = table->address + (hash << _tzcnt_u64(linesz));
 	Address addrend = table->address + table->extent;
 	Address lineaddr = addr;
@@ -181,6 +183,8 @@ Index *Fetch(void *key, Count keysz, ITable *table) {
 
 	Count remsz, remlinesz, inc;
 	Byte *ptr = (Byte *)key;
+
+	if (*(Count *)addr) ++Farts[hash];
 	
 	for (;;) {
 		remsz = *(Count *)addr;
@@ -237,6 +241,8 @@ enter:
 	return result;
 }
 
+
+
 ITable table;
 
 std::unordered_map<std::string_view, Index> cpptable;
@@ -247,10 +253,11 @@ Size ClockFrequency, ClockBeginning, ClockEnding;
 #define EndClock()   (void)QueryPerformanceCounter(&ClockEnding)
 #define Elapse()     ((ClockEnding - ClockBeginning) * 1000000000 / ClockFrequency)
 
+// #define KEY_SIZE   (64ull - sizeof(Index) - sizeof(Size))
 #define KEY_SIZE   (64ull)
 #define KEYS_COUNT (4096ull << 4)
 
-#define ITERATIONS_COUNT (1024ull << 4)
+#define ITERATIONS_COUNT (1024ull << 6)
 
 int main(void) {
 	(void)QueryPerformanceFrequency(&ClockFrequency);
@@ -267,17 +274,66 @@ int main(void) {
 	Byte *key = keys;
 	for (Count i = 0; i < keyscnt; ++i) {
 		Count keysz = Rand() % (KEY_SIZE - 1) + 1;
+		// Count keysz = KEY_SIZE;
 		for (Count j = 0; j < keysz; ++j) key[j] = chars[Rand() % charscnt];
 		key[keysz == KEY_SIZE ? KEY_SIZE - 1 : keysz] = 0;
 		key += KEY_SIZE;
 	}
 
-	for (Count i = 0; i < keyscnt; ++i) printf("[%lli] %s\n", i, keys + i * KEY_SIZE);
+	//for (Count i = 0; i < keyscnt; ++i) printf("[%lli] %s\n", i, keys + i * KEY_SIZE);
 	
 	printf("QUANTITY   : %llu\n", DEFAULT_QUANTITY);
 	printf("GRANULARITY: %llu\n", DEFAULT_GRANULARITY);
 	printf("KEY_SIZE   : %llu\n", KEY_SIZE);
 	printf("KEYS_COUNT : %llu\n", KEYS_COUNT);
+	printf("====================================\n");
+	
+	{
+		std::string_view *cppkeys = (std::string_view *)AllocateVirtualMemory(sizeof(std::string_view) * keyscnt);
+		for (Count i = 0; i < keyscnt; ++i) cppkeys[i] = std::string_view(keys + i * KEY_SIZE);
+
+		putmax = 0, getmax = 0;
+		{
+			std::vector<Size> elapses;
+			for (Count i = 0; i < keyscnt; ++i) {
+				BeginClock();
+				volatile Index *index = &cpptable[cppkeys[i]];
+				*index = i;
+				EndClock();
+				Size elapse = Elapse();
+				//printf("%llu\t\t%lli\t-> %lli\n", elapse, i, index);
+				if (elapse > putmax) putmax = elapse;
+				elapses.push_back(elapse);
+			}
+			Size avg = 0;
+			for (auto i : elapses) avg += i;
+			avg /= elapses.size();
+			putavg = avg;
+		}
+
+		{
+			std::vector<Size> elapses;
+			for (Count i = 0; i < ITERATIONS_COUNT; ++i) {
+				Count k = Rand() % keyscnt;
+				BeginClock();
+				volatile Index *index = &cpptable[cppkeys[k]];
+				EndClock();
+				Size elapse = Elapse();
+				//printf("%llu\t\t%lli\t-> %lli\n", elapse, k, *index);
+				if (elapse > getmax) getmax = elapse;
+				elapses.push_back(elapse);
+				// Assert(*index == k,);
+			}
+			Size avg = 0;
+			for (auto i : elapses) avg += i;
+			avg /= elapses.size();
+			getavg = avg;
+		}
+	}
+
+	printf("cpptable:\n");
+	printf("\tput: %llu,\t%llu\n\tget: %llu,\t%llu\n", putavg, putmax, getavg, getmax);
+	printf("====================================\n");
 
 	{
 		putmax = 0, getmax = 0;
@@ -288,7 +344,7 @@ int main(void) {
 				key = keys + i * KEY_SIZE;
 				Count keysz = Size(key);
 				BeginClock();
-				Index *index = Fetch(key, keysz, &table);
+				volatile Index *index = Fetch(key, keysz, &table);
 				*index = i;
 				EndClock();
 				Size elapse = Elapse();
@@ -304,13 +360,12 @@ int main(void) {
 
 		{
 			std::vector<Size> elapses;
-			printf("====================================\n");
 			for (Count i = 0; i < ITERATIONS_COUNT; ++i) {
 				Count k = Rand() % keyscnt;
 				key = keys + k * KEY_SIZE;
 				Count keysz = Size(key);
 				BeginClock();
-				Index *index = Fetch(key, keysz, &table);
+				volatile Index *index = Fetch(key, keysz, &table);
 				EndClock();
 				Size elapse = Elapse();
 				//printf("%llu\t\t%lli\t-> %lli\n", elapse, k, *index);
@@ -327,53 +382,18 @@ int main(void) {
 
 	printf("itable:\n");
 	printf("\tput: %llu,\t%llu\n\tget: %llu,\t%llu\n", putavg, putmax, getavg, getmax);
-
-	{
-		std::string_view *cppkeys = (std::string_view *)AllocateVirtualMemory(sizeof(std::string_view) * keyscnt);
-		for (Count i = 0; i < keyscnt; ++i) cppkeys[i] = std::string_view(keys + i * KEY_SIZE);
-
-		putmax = 0, getmax = 0;
-		{
-			std::vector<Size> elapses;
-			for (Count i = 0; i < keyscnt; ++i) {
-				BeginClock();
-				Index *index = &cpptable[cppkeys[i]];
-				*index = i;
-				EndClock();
-				Size elapse = Elapse();
-				//printf("%llu\t\t%lli\t-> %lli\n", elapse, i, index);
-				if (elapse > putmax) putmax = elapse;
-				elapses.push_back(elapse);
-			}
-			Size avg = 0;
-			for (auto i : elapses) avg += i;
-			avg /= elapses.size();
-			putavg = avg;
-		}
-
-		{
-			std::vector<Size> elapses;
-			printf("====================================\n");
-			for (Count i = 0; i < ITERATIONS_COUNT; ++i) {
-				Count k = Rand() % keyscnt;
-				BeginClock();
-				Index *index = &cpptable[cppkeys[k]];
-				EndClock();
-				Size elapse = Elapse();
-				//printf("%llu\t\t%lli\t-> %lli\n", elapse, k, *index);
-				if (elapse > getmax) getmax = elapse;
-				elapses.push_back(elapse);
-			}
-			Size avg = 0;
-			for (auto i : elapses) avg += i;
-			avg /= elapses.size();
-			getavg = avg;
-		}
+	printf("====================================\n");
+	
+	Size fartsavg = 0, fartsmax = 0;
+	for (Count i = 0; i < COUNTOF(Farts); ++i) {
+		fartsavg += Farts[i];
+		if (Farts[i] > fartsmax) fartsmax = Farts[i];
+		//printf("[%lli] %lli\n", i, Farts[i]);
 	}
+	fartsavg /= COUNTOF(Farts);
+	printf("farts: %llu,\t%llu\n", fartsavg, fartsmax);
 
-	printf("cpptable:\n");
-	printf("\tput: %llu,\t%llu\n\tget: %llu,\t%llu\n", putavg, putmax, getavg, getmax);
-
+	printf("cpptable.max_bucket_count: %llu\ncpptable.bucket_count: %llu\n", cpptable.max_bucket_count(), cpptable.bucket_count());
 
 	//getchar();
 	return 0;
