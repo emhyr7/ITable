@@ -26,4 +26,4 @@ rem set linker flags
 set LFLAGS=/DEBUG /INCREMENTAL:NO /OPT:REF /SUBSYSTEM:CONSOLE
 
 if not exist build mkdir build
-clang-cl.exe %CFLAGS% /Fe:build\STable /Tp *.c -link %LFLAGS% || exit /b 1
+clang-cl.exe %CFLAGS% /Fe:build\ITable /Tp *.c -link %LFLAGS% || exit /b 1

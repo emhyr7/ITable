@@ -21,7 +21,7 @@ extern "C" int   __stdcall VirtualFree  (void *, unsigned long long, unsigned);
 
 typedef unsigned long long Address;
 typedef Address            Size;
-typedef Size               Index;
+typedef signed long long   Index;
 typedef signed long long   Count;
 
 typedef long long Word;
@@ -139,8 +139,8 @@ inline U64 Hash_FNV1a(Byte *p, Count n) {
 #define Rand()        ({U64 x; while (!_rdrand64_step(&x)); x;})
 
 #define DEFAULT_EXTENT      (1ull << 32)
-#define DEFAULT_QUANTITY    (16ull)
-#define DEFAULT_GRANULARITY (32ull)
+#define DEFAULT_QUANTITY    (1024ull << 2)
+#define DEFAULT_GRANULARITY (64ull)
 
 /*
 a table that only increases in size. there're no capabilities to evict entries.
@@ -167,24 +167,24 @@ void Initialize(ITable *table) {
 	Assert(CheckAlignment(table->granularity),);
 }
 
-Index *Fetch(void *key, Size keysz, ITable *table) {
+Index *Fetch(void *key, Count keysz, ITable *table) {
 	Index *result = 0;
 
-	Size linescnt = table->quantity;
-	Size linesz = table->granularity;
+	Count linescnt = table->quantity;
+	Count linesz = table->granularity;
 	
 	U32 hash = Hash(key, keysz) & (linescnt - 1);
 	Address addr = table->address + (hash << _tzcnt_u64(linesz));
 	Address addrend = table->address + table->extent;
 	Address lineaddr = addr;
-	Size layersz = linescnt << _tzcnt_u64(linesz);
+	Count layersz = linescnt << _tzcnt_u64(linesz);
 
-	Size remsz, remlinesz, inc;
+	Count remsz, remlinesz, inc;
 	Byte *ptr = (Byte *)key;
 	
 	for (;;) {
-		remsz = *(Size *)addr;
-		addr += sizeof(Size);
+		remsz = *(Count *)addr;
+		addr += sizeof(Count);
 		remlinesz = linesz - (addr - lineaddr);
 		if (remsz == keysz) {
 			for (;;) {
@@ -211,7 +211,7 @@ Index *Fetch(void *key, Size keysz, ITable *table) {
 		addr = AlignForwards(addr, ALIGNOF(Index));
 		if (addr > lineaddr + linesz - sizeof(Index)) addr = lineaddr += layersz;
 		addr += sizeof(Index);
-		if (addr > lineaddr + linesz - sizeof(Size)) addr = lineaddr += layersz;
+		if (addr > lineaddr + linesz - sizeof(Count)) addr = lineaddr += layersz;
 		Assert(addr < addrend,);
 	}
 found:
@@ -220,7 +220,7 @@ found:
 	result = (Index *)addr;
 	return result;
 enter:
-	((Size *)addr)[-1] = keysz;
+	((Count *)addr)[-1] = keysz;
 	remsz = keysz;
 	for (;;) {
 		inc = remsz <= remlinesz ? remsz : remlinesz;
@@ -247,8 +247,8 @@ Size ClockFrequency, ClockBeginning, ClockEnding;
 #define EndClock()   (void)QueryPerformanceCounter(&ClockEnding)
 #define Elapse()     ((ClockEnding - ClockBeginning) * 1000000000 / ClockFrequency)
 
-#define KEY_SIZE   (8ull)
-#define KEYS_COUNT (16ull)
+#define KEY_SIZE   (64ull)
+#define KEYS_COUNT (4096ull << 4)
 
 #define ITERATIONS_COUNT (1024ull << 4)
 
@@ -257,7 +257,7 @@ int main(void) {
 	
 	U64 rand = Rand();
 
-	Size putavg, getavg;
+	Size putavg, getavg, putmax, getmax;
 
 	Byte chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 	Count charscnt = COUNTOF(chars) - 1;
@@ -280,6 +280,7 @@ int main(void) {
 	printf("KEYS_COUNT : %llu\n", KEYS_COUNT);
 
 	{
+		putmax = 0, getmax = 0;
 		{
 			std::vector<Size> elapses;
 			Initialize(&table);
@@ -292,6 +293,7 @@ int main(void) {
 				EndClock();
 				Size elapse = Elapse();
 				//printf("%llu\t\t%lli\t-> %lli\n", elapse, i, *index);
+				if (elapse > putmax) putmax = elapse;
 				elapses.push_back(elapse);
 			}
 			Size avg = 0;
@@ -312,6 +314,7 @@ int main(void) {
 				EndClock();
 				Size elapse = Elapse();
 				//printf("%llu\t\t%lli\t-> %lli\n", elapse, k, *index);
+				if (elapse > getmax) getmax = elapse;
 				elapses.push_back(elapse);
 				//Assert(*index == k,);
 			}
@@ -323,12 +326,13 @@ int main(void) {
 	}
 
 	printf("itable:\n");
-	printf("\tput: %llu\n\tget: %llu\n", putavg, getavg);
+	printf("\tput: %llu,\t%llu\n\tget: %llu,\t%llu\n", putavg, putmax, getavg, getmax);
 
 	{
 		std::string_view *cppkeys = (std::string_view *)AllocateVirtualMemory(sizeof(std::string_view) * keyscnt);
 		for (Count i = 0; i < keyscnt; ++i) cppkeys[i] = std::string_view(keys + i * KEY_SIZE);
 
+		putmax = 0, getmax = 0;
 		{
 			std::vector<Size> elapses;
 			for (Count i = 0; i < keyscnt; ++i) {
@@ -338,6 +342,7 @@ int main(void) {
 				EndClock();
 				Size elapse = Elapse();
 				//printf("%llu\t\t%lli\t-> %lli\n", elapse, i, index);
+				if (elapse > putmax) putmax = elapse;
 				elapses.push_back(elapse);
 			}
 			Size avg = 0;
@@ -356,6 +361,7 @@ int main(void) {
 				EndClock();
 				Size elapse = Elapse();
 				//printf("%llu\t\t%lli\t-> %lli\n", elapse, k, *index);
+				if (elapse > getmax) getmax = elapse;
 				elapses.push_back(elapse);
 			}
 			Size avg = 0;
@@ -366,7 +372,7 @@ int main(void) {
 	}
 
 	printf("cpptable:\n");
-	printf("\tput: %llu\n\tget: %llu\n", putavg, getavg);
+	printf("\tput: %llu,\t%llu\n\tget: %llu,\t%llu\n", putavg, putmax, getavg, getmax);
 
 
 	//getchar();
