@@ -140,7 +140,7 @@ inline U64 Hash_FNV1a(Byte *p, Count n) {
 
 #define DEFAULT_EXTENT      (1ull << 32)
 #define DEFAULT_QUANTITY    (1024ull << 3)
-#define DEFAULT_GRANULARITY (4096ull)
+#define DEFAULT_GRANULARITY (128ull)
 
 /*
 a table that only increases in size. there're no capabilities to evict entries.
@@ -187,6 +187,7 @@ Index *Fetch(void *key, Count keysz, ITable *table) {
 	if (*(Count *)addr) ++Farts[hash];
 	
 	for (;;) {
+		//_mm_prefetch((char *)(lineaddr + layersz), _MM_HINT_T0);
 		remsz = *(Count *)addr;
 		addr += sizeof(Count);
 		remlinesz = linesz - (addr - lineaddr);
@@ -254,7 +255,7 @@ Size ClockFrequency, ClockBeginning, ClockEnding;
 #define Elapse()     ((ClockEnding - ClockBeginning) * 1000000000 / ClockFrequency)
 
 // #define KEY_SIZE   (64ull - sizeof(Index) - sizeof(Size))
-#define KEY_SIZE   (64ull)
+#define KEY_SIZE   (32ull)
 #define KEYS_COUNT (4096ull << 4)
 
 #define ITERATIONS_COUNT (1024ull << 6)
